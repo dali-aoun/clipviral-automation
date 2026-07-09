@@ -1,0 +1,23 @@
+{
+  "name": "clipviral-automation",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ClipViral multi-platform upload automation (Instagram, YouTube, TikTok) for Whop ContentRewards",
+  "scripts": {
+    "ig:cv": "node instagram/clipviral_viralclips/upload.mjs",
+    "ig:daleel": "node instagram/med.ali.84/upload.mjs",
+    "yt:auth": "node youtube/theclipviralco/auth.mjs",
+    "yt:cv": "node youtube/theclipviralco/upload.mjs",
+    "yt:daleel:auth": "node youtube/QuranKarim-84/auth.mjs",
+    "yt:daleel": "node youtube/QuranKarim-84/upload.mjs",
+    "tt:cv": "node tiktok/clipviral.co0/upload.mjs",
+    "whop:setup": "node whop/submit.mjs --setup",
+    "whop:submit": "node whop/submit.mjs"
+  },
+  "dependencies": {
+    "form-data": "^4.0.6",
+    "googleapis": "^173.0.0",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.61.1"
+  }
+}
