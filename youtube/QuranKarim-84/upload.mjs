@@ -9,8 +9,9 @@
  *   4. node youtube/QuranKarim-84/upload.mjs daleel 1
  */
 import { google } from "googleapis";
-import { createReadStream, statSync, existsSync, readFileSync } from "fs";
+import { createReadStream, statSync, existsSync, readFileSync, unlinkSync } from "fs";
 import { readFile, writeFile } from "fs/promises";
+import { execSync } from "child_process";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -18,7 +19,7 @@ const __dirname        = dirname(fileURLToPath(import.meta.url));
 const CREDENTIALS_PATH = join(__dirname, "credentials.json");
 const TOKEN_PATH       = join(__dirname, "token.json");
 
-const ROOT      = resolve(__dirname, "../../..");
+const ROOT      = resolve(__dirname, "../..");
 const env       = loadEnv(join(ROOT, ".env"));
 const CLIPS_DIR = env.DALEEL_CLIPS_DIR;
 
@@ -71,6 +72,14 @@ async function main() {
   console.log(`Clip  : ${clipNum} — ${clip.title}`);
   console.log(`File  : ${clip.file} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
 
+  // Add Arabic voiceover (same script as Instagram Daleel)
+  const voicedPath  = filePath.replace(/\.(mov|mp4)$/i, "_voiced.mp4");
+  const voiceScript = join(__dirname, "../../instagram/med.ali.84/voiceover.py");
+  console.log("  Adding Arabic voiceover...");
+  execSync(`python "${voiceScript}" ${clipNum} "${filePath}" "${voicedPath}"`, { stdio: "inherit" });
+  const uploadPath = existsSync(voicedPath) ? voicedPath : filePath;
+  const uploadSize = statSync(uploadPath).size;
+
   const auth    = await getAuthClient();
   const youtube = google.youtube({ version: "v3", auth });
 
@@ -80,13 +89,15 @@ async function main() {
       snippet: { title: clip.title, description: clip.description, tags: clip.tags, categoryId: "22", defaultLanguage: "ar" },
       status:  { privacyStatus: "public", selfDeclaredMadeForKids: false },
     },
-    media: { body: createReadStream(filePath) },
+    media: { body: createReadStream(uploadPath) },
   }, {
     onUploadProgress: (evt) => {
-      const pct = Math.round((evt.bytesRead / fileSize) * 100);
+      const pct = Math.round((evt.bytesRead / uploadSize) * 100);
       process.stdout.write(`\r  Progress: ${pct}%`);
     },
   });
+
+  if (uploadPath !== filePath && existsSync(voicedPath)) unlinkSync(voicedPath);
 
   const videoUrl = `https://www.youtube.com/watch?v=${res.data.id}`;
   console.log(`\n\nUPLOADED: ${videoUrl}`);

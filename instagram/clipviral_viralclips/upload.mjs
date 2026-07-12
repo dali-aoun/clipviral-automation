@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 import FormData from "form-data";
 import fetch from "node-fetch";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const env  = loadEnv(join(ROOT, ".env"));
 
 const IG_TOKEN   = env.IG_CV_TOKEN;

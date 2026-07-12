@@ -13,6 +13,7 @@
 import { google } from "googleapis";
 import { createReadStream, statSync, existsSync, readFileSync } from "fs";
 import { readFile, writeFile } from "fs/promises";
+import { execSync } from "child_process";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -20,7 +21,7 @@ const __dirname        = dirname(fileURLToPath(import.meta.url));
 const CREDENTIALS_PATH = join(__dirname, "credentials.json");
 const TOKEN_PATH       = join(__dirname, "token.json");
 
-const ROOT      = resolve(__dirname, "../../..");
+const ROOT      = resolve(__dirname, "../..");
 const env       = loadEnv(join(ROOT, ".env"));
 const CLIPS_DIR = env.CLIPS_DIR;
 
@@ -91,7 +92,12 @@ async function uploadClip(clip, clipNum) {
 
   const videoUrl = `https://www.youtube.com/watch?v=${res.data.id}`;
   console.log(`\n\nUPLOADED: ${videoUrl}`);
-  console.log(`Submit on Whop: contentrewards.com → coinbase campaign → ${videoUrl}`);
+
+  // Auto-submit to Whop ContentRewards
+  console.log("\nSubmitting to Whop ContentRewards...");
+  const whopScript = join(ROOT, "whop", "submit.mjs");
+  execSync(`node "${whopScript}" "${clip.title}" "${videoUrl}"`, { stdio: "inherit", cwd: ROOT });
+
   return videoUrl;
 }
 

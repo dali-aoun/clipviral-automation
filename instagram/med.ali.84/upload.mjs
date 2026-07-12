@@ -9,13 +9,14 @@
  *
  * Same flow as clipviral_viralclips — only credentials differ.
  */
-import { createReadStream, existsSync, statSync, readFileSync } from "fs";
+import { createReadStream, existsSync, statSync, readFileSync, unlinkSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { execSync } from "child_process";
 import FormData from "form-data";
 import fetch from "node-fetch";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const env  = loadEnv(join(ROOT, ".env"));
 
 const IG_TOKEN   = env.IG_DALEEL_TOKEN;
@@ -54,8 +55,32 @@ async function uploadToLitterbox(filePath) {
   return url;
 }
 
+async function uploadToCatbox(filePath) {
+  console.log("  Uploading to catbox.moe...");
+  const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append("fileToUpload", createReadStream(filePath));
+  const res = await fetch("https://catbox.moe/user/api.php", {
+    method: "POST", body: form, headers: form.getHeaders(),
+  });
+  const url = (await res.text()).trim();
+  if (!url.startsWith("https://")) throw new Error(`catbox failed: ${url}`);
+  return url;
+}
+
+async function uploadVideo(filePath) {
+  try {
+    return await uploadToLitterbox(filePath);
+  } catch (e) {
+    console.log(`  litterbox error: ${e.message.substring(0, 60)} — trying catbox.moe...`);
+    return await uploadToCatbox(filePath);
+  }
+}
+
 async function igPost(videoUrl, caption) {
-  const base = `https://graph.instagram.com/v21.0/${IG_USER_ID}`;
+  const base = `https://graph.facebook.com/v21.0/${IG_USER_ID}`;
+
+  console.log("  Creating Instagram container...");
   const cRes = await fetch(`${base}/media`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -63,11 +88,13 @@ async function igPost(videoUrl, caption) {
   });
   const container = await cRes.json();
   if (!container.id) throw new Error(`Container failed: ${JSON.stringify(container)}`);
+  console.log(`  Container: ${container.id}`);
 
+  console.log("  Processing...");
   let status = "IN_PROGRESS";
   for (let i = 0; i < 30 && status !== "FINISHED"; i++) {
     await sleep(10000);
-    const s = await (await fetch(`https://graph.instagram.com/v21.0/${container.id}?fields=status_code&access_token=${IG_TOKEN}`)).json();
+    const s = await (await fetch(`https://graph.facebook.com/v21.0/${container.id}?fields=status_code&access_token=${IG_TOKEN}`)).json();
     status = s.status_code;
     process.stdout.write(`\r  Status: ${status} (${i + 1}/30)  `);
     if (status === "ERROR") throw new Error(`Processing error: ${JSON.stringify(s)}`);
@@ -75,6 +102,7 @@ async function igPost(videoUrl, caption) {
   if (status !== "FINISHED") throw new Error("Timeout");
   console.log();
 
+  console.log("  Publishing...");
   const pub = await (await fetch(`${base}/media_publish`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -82,7 +110,7 @@ async function igPost(videoUrl, caption) {
   })).json();
   if (!pub.id) throw new Error(`Publish failed: ${JSON.stringify(pub)}`);
 
-  const media = await (await fetch(`https://graph.instagram.com/v21.0/${pub.id}?fields=permalink&access_token=${IG_TOKEN}`)).json();
+  const media = await (await fetch(`https://graph.facebook.com/v21.0/${pub.id}?fields=permalink&access_token=${IG_TOKEN}`)).json();
   return media.permalink || `https://www.instagram.com/reel/${pub.id}/`;
 }
 
@@ -102,7 +130,15 @@ async function main() {
   console.log(`Campaign : ${campaignName} | Clip ${clipNum + 1}`);
   console.log(`File     : ${clip.file} (${mb} MB)`);
 
-  const publicUrl = await uploadToLitterbox(filePath);
+  const voicedPath = filePath.replace(/\.(mov|mp4)$/i, "_voiced.mp4");
+  const voiceScript = join(dirname(fileURLToPath(import.meta.url)), "voiceover.py");
+  console.log("  Adding Arabic voiceover...");
+  execSync(`python "${voiceScript}" ${clipNum + 1} "${filePath}" "${voicedPath}"`, { stdio: "inherit" });
+  const uploadPath = existsSync(voicedPath) ? voicedPath : filePath;
+
+  const publicUrl = await uploadVideo(uploadPath);
+
+  if (uploadPath !== filePath && existsSync(voicedPath)) unlinkSync(voicedPath);
   const postUrl   = await igPost(publicUrl, clip.caption);
 
   console.log(`\nPOSTED: ${postUrl}`);

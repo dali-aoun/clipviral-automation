@@ -1,0 +1,63 @@
+name: YouTube Coinbase — @theclipviralco
+
+on:
+  schedule:
+    - cron: '0 13 * * *'  # 14h Tunisia (UTC+1)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get next clip info
+        id: clip
+        run: |
+          node automation/next-clip.mjs coinbase yt | while IFS='=' read key val; do
+            echo "$key=$val" >> $GITHUB_OUTPUT
+          done
+
+      - name: Download clip from R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          mkdir -p /tmp/clips
+          npx wrangler r2 object get clipviral-videos/${{ steps.clip.outputs.KEY }} --file /tmp/clips/${{ steps.clip.outputs.FILE }}
+
+      - name: Setup YouTube credentials
+        run: |
+          echo '${{ secrets.YT_CLIPVIRAL_CREDENTIALS }}' | base64 -d > youtube/theclipviralco/credentials.json
+          echo '${{ secrets.YT_CLIPVIRAL_TOKEN }}'       | base64 -d > youtube/theclipviralco/token.json
+
+      - name: Create .env
+        run: echo "CLIPS_DIR=/tmp/clips" > .env
+
+      - name: Publish to YouTube
+        run: node youtube/theclipviralco/upload.mjs coinbase ${{ steps.clip.outputs.NUM }}
+
+      - name: Delete clip from R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler r2 object delete clipviral-videos/${{ steps.clip.outputs.KEY }}
+
+      - name: Advance state + commit
+        run: |
+          node automation/advance-state.mjs coinbase yt
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add automation/state.json
+          git commit -m "chore: published coinbase yt clip ${{ steps.clip.outputs.NUM }}"
+          git push
