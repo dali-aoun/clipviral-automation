@@ -1,25 +1,23 @@
 /**
- * Upload local clips to R2 — run locally before scheduling
+ * Upload local clips to Cloudflare R2 via wrangler (no API keys needed)
  *
  * Usage:
- *   node r2/sync.mjs daleel yt 1        # upload Daleel clip 1 for YouTube
- *   node r2/sync.mjs daleel ig 1-5      # upload Daleel clips 1-5 for Instagram
- *   node r2/sync.mjs coinbase yt 1-10   # upload Coinbase clips 1-10 for YouTube
- *   node r2/sync.mjs coinbase ig 1-10   # upload Coinbase clips 1-10 for Instagram
- *
- * Requires R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY in .env
+ *   node r2/sync.mjs daleel ig 1-15      # Daleel clips for Instagram
+ *   node r2/sync.mjs daleel tiktok 1-15  # Daleel clips for TikTok
+ *   node r2/sync.mjs coinbase yt 4-15    # Coinbase clips for YouTube
+ *   node r2/sync.mjs coinbase ig 4-15    # Coinbase clips for Instagram
+ *   node r2/sync.mjs list                # List bucket contents
  *
  * R2 key format: {campaign}/{platform}/{N}.{ext}
- *   daleel/yt/1.mov   daleel/ig/2.mov
- *   coinbase/yt/1.mp4 coinbase/ig/3.mp4
  */
-import { PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
-import { createReadStream, existsSync, readFileSync, statSync } from "fs";
-import { join, dirname, resolve, extname } from "path";
+import { execSync } from "child_process";
+import { existsSync, readFileSync, statSync } from "fs";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT      = resolve(__dirname, "..");
+const BUCKET    = "clipviral-videos";
 
 function loadEnv() {
   const envPath = join(ROOT, ".env");
@@ -32,23 +30,13 @@ function loadEnv() {
   );
 }
 
-// Load env from .env file, but env vars set in shell take precedence
-const fileEnv = loadEnv();
-for (const [k, v] of Object.entries(fileEnv)) {
-  if (!process.env[k]) process.env[k] = v;
-}
-
-const { r2, BUCKET } = await import("./client.mjs");
-
-const DALEEL_DIR  = process.env.DALEEL_CLIPS_DIR;
-const COINBASE_DIR = process.env.CLIPS_DIR;
+const env = loadEnv();
 
 const CAMPAIGN_DIRS = {
-  daleel:   DALEEL_DIR,
-  coinbase: COINBASE_DIR,
+  daleel:   env.DALEEL_CLIPS_DIR,
+  coinbase: env.CLIPS_DIR,
 };
 
-// Extension lookup by clip number for each campaign
 const DALEEL_EXTS = {
   1:"mov",2:"mov",3:"mov",4:"mov",5:"mov",
   6:"mov",7:"mov",8:"mov",9:"mov",
@@ -68,74 +56,59 @@ function parseRange(rangeStr) {
   return [parseInt(rangeStr, 10)];
 }
 
-async function uploadClip(campaign, platform, num) {
-  const ext      = getExt(campaign, num);
-  const filename = `${num}.${ext}`;
-  const localDir = CAMPAIGN_DIRS[campaign];
-  if (!localDir) { console.error(`❌ No directory configured for campaign "${campaign}"`); return; }
+function uploadClip(campaign, platform, num) {
+  const ext       = getExt(campaign, num);
+  const filename  = `${num}.${ext}`;
+  const localDir  = CAMPAIGN_DIRS[campaign];
+
+  if (!localDir) { console.error(`❌ No directory for "${campaign}" in .env`); return; }
 
   const localPath = join(localDir, filename);
-  if (!existsSync(localPath)) {
-    console.error(`  ❌ Not found: ${localPath}`);
-    return;
-  }
+  if (!existsSync(localPath)) { console.error(`  ❌ Not found: ${localPath}`); return; }
 
-  const key      = `${campaign}/${platform}/${filename}`;
-  const fileSize = statSync(localPath).size;
-  console.log(`  Uploading ${key} (${(fileSize / 1024 / 1024).toFixed(1)} MB)...`);
+  const key         = `${campaign}/${platform}/${filename}`;
+  const contentType = ext === "mov" ? "video/quicktime" : "video/mp4";
+  const mb          = (statSync(localPath).size / 1024 / 1024).toFixed(1);
 
-  await r2.send(new PutObjectCommand({
-    Bucket:      BUCKET,
-    Key:         key,
-    Body:        createReadStream(localPath),
-    ContentType: ext === "mov" ? "video/quicktime" : "video/mp4",
-  }));
+  console.log(`  Uploading ${key} (${mb} MB)...`);
+  execSync(
+    `npx wrangler r2 object put ${BUCKET}/${key} --file "${localPath}" --content-type "${contentType}"`,
+    { stdio: "inherit" }
+  );
   console.log(`  ✅ ${key}`);
-}
-
-async function listBucket() {
-  const res = await r2.send(new ListObjectsV2Command({ Bucket: BUCKET }));
-  const objects = res.Contents || [];
-  if (objects.length === 0) {
-    console.log("  (empty)");
-    return;
-  }
-  for (const obj of objects) {
-    console.log(`  ${obj.Key}  (${(obj.Size / 1024 / 1024).toFixed(1)} MB)`);
-  }
 }
 
 async function main() {
   const [,, campaign, platform, rangeStr] = process.argv;
 
   if (campaign === "list" || campaign === "--list") {
-    console.log(`\nBucket: ${BUCKET}`);
-    await listBucket();
+    execSync(`npx wrangler r2 object list ${BUCKET}`, { stdio: "inherit" });
     return;
   }
 
   if (!campaign || !platform || !rangeStr) {
     console.log("Usage:");
-    console.log("  node r2/sync.mjs daleel yt 1");
-    console.log("  node r2/sync.mjs daleel ig 1-5");
-    console.log("  node r2/sync.mjs coinbase yt 1-10");
+    console.log("  node r2/sync.mjs daleel ig 1-15");
+    console.log("  node r2/sync.mjs daleel tiktok 1-15");
+    console.log("  node r2/sync.mjs coinbase yt 4-15");
+    console.log("  node r2/sync.mjs coinbase ig 4-15");
     console.log("  node r2/sync.mjs list");
     process.exit(1);
   }
 
   if (!["daleel", "coinbase"].includes(campaign)) {
-    console.error(`❌ Unknown campaign: ${campaign}`);
+    console.error(`❌ Unknown campaign: ${campaign} (must be daleel or coinbase)`);
     process.exit(1);
   }
-  if (!["yt", "ig"].includes(platform)) {
-    console.error(`❌ Platform must be 'yt' or 'ig'`);
+  if (!["yt", "ig", "tiktok"].includes(platform)) {
+    console.error(`❌ Unknown platform: ${platform} (must be yt, ig or tiktok)`);
     process.exit(1);
   }
 
   const nums = parseRange(rangeStr);
   console.log(`\nUploading ${campaign}/${platform} clips [${nums.join(", ")}] → R2\n`);
   for (const num of nums) {
-    await uploadClip(campaign, platform, num);
+    uploadClip(campaign, platform, num);
   }
   console.log("\nDone. Run 'node r2/sync.mjs list' to verify.");
 }
