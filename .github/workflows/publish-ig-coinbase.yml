@@ -48,7 +48,18 @@ jobs:
           EOF
 
       - name: Publish to Instagram
-        run: node instagram/clipviral_viralclips/upload.mjs coinbase ${{ steps.clip.outputs.NUM }}
+        id: publish
+        run: |
+          node instagram/clipviral_viralclips/upload.mjs coinbase ${{ steps.clip.outputs.NUM }} | tee /tmp/ig_output.txt
+          POST_URL=$(grep '^POST_URL=' /tmp/ig_output.txt | cut -d= -f2-)
+          echo "POST_URL=$POST_URL" >> $GITHUB_OUTPUT
+
+      - name: Submit to Whop ContentRewards
+        env:
+          WHOP_SESSION: ${{ secrets.WHOP_SESSION }}
+        run: |
+          echo "$WHOP_SESSION" | base64 -d > whop/session.json
+          node whop/submit.mjs "${{ steps.publish.outputs.POST_URL }}"
 
       - name: Delete clip from R2
         env:

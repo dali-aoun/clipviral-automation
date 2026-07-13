@@ -113,6 +113,8 @@ async function main() {
 
   console.log(`\nPOSTED: ${postUrl}`);
   console.log(`Submit on Whop: contentrewards.com → ${campaignName} campaign → ${postUrl}`);
+  // Output parseable line for CI
+  console.log(`POST_URL=${postUrl}`);
 }
 
 main().catch(e => { console.error("\n❌", e.message); process.exit(1); });

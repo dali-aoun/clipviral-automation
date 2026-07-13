@@ -1,12 +1,18 @@
 /**
- * Whop ContentRewards Auto-Submit — @clipviral_viralclips
+ * Whop ContentRewards Auto-Submit
+ * Submits uploaded video URLs to the ContentRewards campaign on Whop.
  *
  * SETUP (once):
  *   node whop/submit.mjs --setup
- *   → Opens Chrome, login to Whop, submit ONE video manually, close window
+ *   → Opens Chrome, login to Whop, submit ONE video manually
+ *   → Script captures the API format automatically → saves to session.json (gitignored)
  *
  * SUBMIT:
- *   node whop/submit.mjs "<title>" "<instagram_url>"
+ *   node whop/submit.mjs "<video title>" "<video url>"
+ *   node whop/submit.mjs "Coinbase AI Advisor" "https://www.youtube.com/watch?v=..."
+ *
+ * INSPECT (if API format changes):
+ *   node whop/submit.mjs --inspect
  */
 import { chromium } from "playwright";
 import { existsSync, readFileSync, writeFileSync } from "fs";
@@ -15,15 +21,9 @@ import { fileURLToPath } from "url";
 
 const __dirname    = dirname(fileURLToPath(import.meta.url));
 const SESSION_FILE = join(__dirname, "session.json");
-const WHOP_PROFILE = join(__dirname, ".whop-profile");
+const SUBMIT_URL   = "https://whop.com/hub/cliphaus/coinbase/submit/";
 const CHROME_EXE   = process.env.CHROME_EXE || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-
-// Discovered during setup — Whop embedded app endpoints
-const APP_BASE     = "https://b4e0vdqv6zgqeqj4pfgm.apps.whop.com";
-const EXPERIENCE   = "exp_7JCcUJtwdGEme8";
-const CAMPAIGN_ID  = "c60b3049-e616-4a20-af96-93202d929748";
-const APP_URL      = `${APP_BASE}/experiences/${EXPERIENCE}/discover/${CAMPAIGN_ID}`;
-const WHOP_URL     = "https://whop.com/joined/cliphaus-inc/exp_7JCcUJtwdGEme8/app/";
+const CHROME_DATA  = process.env.CHROME_USER_DATA || "C:\\Users\\DALI\\AppData\\Local\\Google\\Chrome\\User Data";
 
 function loadSession() {
   if (!existsSync(SESSION_FILE)) {
@@ -33,152 +33,206 @@ function loadSession() {
   return JSON.parse(readFileSync(SESSION_FILE, "utf-8"));
 }
 
-function saveSession(data) {
-  writeFileSync(SESSION_FILE, JSON.stringify(data, null, 2));
+function saveSession(session) {
+  writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
 }
 
-function launchChrome(headless = true) {
-  return chromium.launchPersistentContext(WHOP_PROFILE, {
+function buildCookieHeader(cookies) {
+  return cookies
+    .filter(c => c.domain && (c.domain.includes("whop.com") || c.domain.startsWith(".")))
+    .map(c => `${c.name}=${c.value}`)
+    .join("; ");
+}
+
+async function apiSubmit(title, videoUrl, session) {
+  const fmt = session.apiFormat;
+  if (!fmt) return false;
+
+  console.log("Submitting via API...");
+  const cookieHeader = buildCookieHeader(session.cookies);
+  const csrfToken    = session.cookies.find(c => c.name.includes("csrf"))?.value || "";
+
+  let body;
+  if (fmt.contentType === "application/json") {
+    const payload = { ...fmt.payload };
+    if (fmt.titleKey) payload[fmt.titleKey] = title;
+    if (fmt.urlKey)   payload[fmt.urlKey]   = videoUrl;
+    body = JSON.stringify(payload);
+  } else {
+    const params = new URLSearchParams(fmt.payload);
+    if (fmt.titleKey) params.set(fmt.titleKey, title);
+    if (fmt.urlKey)   params.set(fmt.urlKey, videoUrl);
+    body = params.toString();
+  }
+
+  const headers = { ...fmt.headers, "cookie": cookieHeader, "x-csrf-token": csrfToken, "content-type": fmt.contentType || "application/json" };
+  delete headers["content-length"];
+
+  try {
+    const res = await fetch(fmt.url, { method: "POST", headers, body });
+    const text = await res.text().catch(() => "");
+    if (res.ok || res.status === 201 || res.status === 202) {
+      console.log(`Submitted! (HTTP ${res.status})`);
+      return true;
+    }
+    console.log(`API ${res.status}: ${text.substring(0, 200)}`);
+    return false;
+  } catch (e) {
+    console.log(`Network error: ${e.message}`);
+    return false;
+  }
+}
+
+async function browserSubmit(title, videoUrl, session, headless = false) {
+  console.log(`Opening Chrome${headless ? " (headless)" : ""}...`);
+  if (!headless) console.log("  Close Chrome completely before running this script!\n");
+
+  const context = await chromium.launchPersistentContext(CHROME_DATA, {
     headless,
     executablePath: CHROME_EXE,
     channel: "chrome",
-    args: ["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"],
+    args: ["--profile-directory=Default", "--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"],
     ignoreDefaultArgs: ["--enable-automation"],
-    slowMo: headless ? 0 : 80,
+    slowMo: headless ? 0 : 150,
   });
-}
+  const page = await context.newPage();
 
-async function autoSubmit(title, videoUrl) {
-  console.log(`Submitting: "${title}"\n  ${videoUrl}`);
-  const context = await launchChrome(false); // visible for debugging
-  const page    = await context.newPage();
-
-  try {
-    await page.goto(WHOP_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForTimeout(5000);
-
-    // The submit form is inside an iframe from apps.whop.com
-    const frames = page.frames();
-    console.log(`  Frames found: ${frames.length}`);
-    frames.forEach((f, i) => console.log(`    [${i}] ${f.url()}`));
-
-    // Find the apps.whop.com iframe and navigate it to the campaign submit page
-    const appFrame = frames.find(f => f.url().includes("apps.whop.com"));
-    if (!appFrame) throw new Error("apps.whop.com iframe not found");
-    console.log(`  App frame: ${appFrame.url()}`);
-
-    await appFrame.goto(APP_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-    console.log(`  Navigated to campaign submit page`);
-    await appFrame.waitForTimeout(4000);
-    const target = appFrame;
-
-    // Click "Submit Video" button to open the submission form
-    const submitVideoBtn = target.locator('button:has-text("Submit Video")').first();
-    await submitVideoBtn.waitFor({ timeout: 15000 });
-    await submitVideoBtn.click();
-    console.log("  Clicked 'Submit Video'");
-    await target.waitForTimeout(2000);
-
-    // Now the URL input should appear
-    const urlInput = target.locator('input[type="url"], input[placeholder*="instagram" i], input[placeholder*="http" i], input[placeholder*="url" i], input[placeholder*="link" i]').first();
-    await urlInput.waitFor({ timeout: 15000 });
-    await urlInput.fill(videoUrl);
-    console.log("  URL filled");
-    await target.waitForTimeout(1000);
-
-    // Fill title if present
-    const titleInput = target.locator('input[placeholder*="title" i], input[name*="title" i]').first();
-    if (await titleInput.isVisible({ timeout: 1000 }).catch(() => false)) {
-      await titleInput.fill(title);
-      console.log("  Title filled");
+  const captured = [];
+  page.on("request", req => {
+    if (req.method() === "POST" && req.url().includes("whop.com") && !req.url().includes("cdn-cgi")) {
+      const body = req.postData() || "";
+      captured.push({ url: req.url(), headers: req.headers(), body, ts: Date.now() });
     }
+  });
 
-    // Click submit — use force:true to bypass modal overlay interception
-    const submitBtn = target.locator('button:has-text("Submit"), button[type="submit"], button:has-text("Post")').first();
-    await submitBtn.waitFor({ timeout: 10000 });
-    await submitBtn.click({ force: true });
-    console.log("  Submit clicked");
+  await page.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+  await page.waitForTimeout(3000);
 
-    await target.waitForTimeout(4000);
-    const success = await target.locator("text=/success|submitted|pending|approved|thank/i").first()
-      .isVisible({ timeout: 10000 }).catch(() => false);
-
-    console.log(success ? "✅ Submitted successfully!" : "⚠️  Result uncertain — verify on Whop");
-    return success;
-  } finally {
-    await page.waitForTimeout(2000);
-    await context.close();
+  // Fill URL field
+  const urlSelectors = ['input[placeholder*="http" i]','input[placeholder*="youtube" i]','input[placeholder*="url" i]','input[type="url"]','input[name*="url" i]'];
+  for (const sel of urlSelectors) {
+    const el = page.locator(sel).first();
+    if (await el.isVisible({ timeout: 1000 }).catch(() => false)) { await el.fill(videoUrl); break; }
   }
+
+  // Fill title field
+  const titleSelectors = ['input[placeholder*="title" i]','input[name*="title" i]','textarea[placeholder*="title" i]'];
+  for (const sel of titleSelectors) {
+    const el = page.locator(sel).first();
+    if (await el.isVisible({ timeout: 1000 }).catch(() => false)) { await el.fill(title); break; }
+  }
+
+  // Check checkboxes
+  const checkboxes = page.locator('input[type="checkbox"]');
+  for (let i = 0; i < await checkboxes.count(); i++) {
+    const cb = checkboxes.nth(i);
+    if (await cb.isVisible({ timeout: 500 }).catch(() => false) && !await cb.isChecked()) await cb.check();
+  }
+
+  captured.length = 0;
+  await page.waitForTimeout(1000);
+
+  const submitSelectors = ['button:has-text("Submit for approval")','button:has-text("Submit")','button[type="submit"]'];
+  for (const sel of submitSelectors) {
+    const btn = page.locator(sel).first();
+    if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) { await btn.click(); break; }
+  }
+
+  await page.waitForTimeout(4000);
+  const success = await page.locator("text=/success|submitted|pending|approved/i").first().isVisible({ timeout: 5000 }).catch(() => false);
+  if (success) console.log("Submitted successfully!");
+  else console.log("Result uncertain — verify on Whop");
+
+  const realSubmit = captured.find(r => r.url.includes("/submit/") && r.body && r.body.length > 4);
+  if (realSubmit) {
+    let payload, contentType;
+    try { payload = JSON.parse(realSubmit.body); contentType = "application/json"; }
+    catch { payload = Object.fromEntries(new URLSearchParams(realSubmit.body)); contentType = "application/x-www-form-urlencoded"; }
+    const titleKey = Object.keys(payload).find(k => /title|name/i.test(k));
+    const urlKey   = Object.keys(payload).find(k => /url|link|video/i.test(k));
+    session.apiFormat = { url: realSubmit.url, headers: realSubmit.headers, contentType, payload, titleKey, urlKey };
+    console.log(`API format captured. titleKey="${titleKey}" urlKey="${urlKey}"`);
+  }
+
+  session.cookies = await context.cookies();
+  saveSession(session);
+  await context.close();
+  return success || Boolean(realSubmit);
 }
 
 async function setup() {
   console.log("\nSETUP MODE — ContentRewards");
-  console.log("1. Chrome will open (separate profile)");
-  console.log("2. Login to Whop with Google if needed");
-  console.log("3. Submit ONE video manually");
-  console.log("4. Close the window → session saved\n");
+  console.log("1. Chrome will open → login to Whop");
+  console.log("2. Submit ONE video manually");
+  console.log("3. Script captures API format automatically\n");
+  console.log("   Close Chrome completely first!\n");
 
-  const context = await launchChrome(false);
-  const page    = await context.newPage();
+  const context = await chromium.launchPersistentContext(CHROME_DATA, {
+    headless: false,
+    executablePath: CHROME_EXE,
+    channel: "chrome",
+    args: ["--profile-directory=Default", "--disable-blink-features=AutomationControlled", "--no-first-run"],
+    ignoreDefaultArgs: ["--enable-automation"],
+    slowMo: 100,
+  });
+  const page = await context.newPage();
 
   const captured = [];
-  context.on("request", req => {
-    if (req.method() === "POST" && req.url().includes("whop.com") && !req.url().includes("analytics") && !req.url().includes("cdn-cgi")) {
+  page.on("request", req => {
+    if (req.method() === "POST" && req.url().includes("whop.com") && !req.url().includes("cdn-cgi")) {
       const body = req.postData() || "";
-      captured.push({ url: req.url(), headers: req.headers(), body, ts: Date.now() });
-      if (body.length > 10) console.log(`  POST [${new Date().toISOString().slice(11,19)}]: ${req.url()}\n    ${body.substring(0, 120)}`);
+      captured.push({ url: req.url(), headers: req.headers(), body });
+      if (body.length > 4) console.log(`  POST captured: ${req.url()}`);
     }
   });
 
-  try { await page.goto(WHOP_URL, { waitUntil: "domcontentloaded", timeout: 90000 }); }
-  catch (e) { console.log(`Navigation warning: ${e.message.substring(0, 80)}`); }
-
-  await new Promise(r => setTimeout(r, 6000));
-  captured.length = 0;
-  console.log("\n>>> Ready — paste video URL in Whop, click Submit, then CLOSE the window. <<<\n");
+  await page.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+  console.log("Waiting... Submit a video in the browser. Window closes automatically.");
 
   await new Promise(resolve => {
-    const timeout = setTimeout(resolve, 600000);
-    context.on("close", () => { clearTimeout(timeout); resolve(); });
-    page.on("close",    () => { clearTimeout(timeout); resolve(); });
+    const check   = setInterval(() => { const r = captured.find(r => r.url.includes("submit") && r.body.length > 10); if (r) { clearInterval(check); clearTimeout(timeout); resolve(r); } }, 500);
+    const timeout = setTimeout(() => { clearInterval(check); resolve(null); }, 600000);
   });
 
-  let cookies = [];
-  try { cookies = await context.cookies(); } catch {}
-
-  const realSubmit = captured.find(r => /instagram|youtube|youtu\.be|tiktok/i.test(r.body))
-    || captured.filter(r => r.body.length > 20).sort((a, b) => b.ts - a.ts)[0];
-
+  const cookies  = await context.cookies();
+  const realSubmit = captured.find(r => r.url.includes("submit") && r.body.length > 10);
   let apiFormat = null;
   if (realSubmit) {
     let payload, contentType;
-    try   { payload = JSON.parse(realSubmit.body); contentType = "application/json"; }
+    try { payload = JSON.parse(realSubmit.body); contentType = "application/json"; }
     catch { payload = Object.fromEntries(new URLSearchParams(realSubmit.body)); contentType = "application/x-www-form-urlencoded"; }
-    const urlKey   = Object.keys(payload).find(k => /url|link|video/i.test(k));
     const titleKey = Object.keys(payload).find(k => /title|name/i.test(k));
-    apiFormat = { url: realSubmit.url, headers: realSubmit.headers, contentType, payload, urlKey, titleKey };
-    console.log(`\nAPI format captured! url="${realSubmit.url}" urlKey="${urlKey}"`);
+    const urlKey   = Object.keys(payload).find(k => /url|link|video/i.test(k));
+    apiFormat = { url: realSubmit.url, headers: realSubmit.headers, contentType, payload, titleKey, urlKey };
+    console.log(`\nAPI format captured! titleKey="${titleKey}" urlKey="${urlKey}"`);
   }
 
-  saveSession({ cookies, apiFormat, capturedRequests: captured.slice(-15) });
-  console.log(`Session saved (${cookies.length} cookies) → node whop/submit.mjs "<title>" "<url>"`);
-  try { await context.close(); } catch {}
+  saveSession({ cookies, apiFormat, capturedRequests: captured.slice(-10) });
+  console.log("Session saved → node whop/submit.mjs \"<title>\" \"<url>\"");
+  await context.close();
 }
 
 async function main() {
   const [,, arg1, arg2] = process.argv;
 
-  if (arg1 === "--setup") { await setup(); return; }
+  if (arg1 === "--setup")   { await setup(); return; }
+  if (arg1 === "--inspect") { await browserSubmit("Test", "https://youtube.com/watch?v=test", loadSession(), false); return; }
 
   if (!arg1 || !arg2) {
     console.log("Usage:");
-    console.log("  Setup:  node whop/submit.mjs --setup");
-    console.log('  Submit: node whop/submit.mjs "<title>" "<url>"');
+    console.log("  Setup:   node whop/submit.mjs --setup");
+    console.log("  Inspect: node whop/submit.mjs --inspect");
+    console.log('  Submit:  node whop/submit.mjs "<title>" "<url>"');
     process.exit(1);
   }
 
-  loadSession(); // verify session exists
-  await autoSubmit(arg1, arg2);
+  const session = loadSession();
+  if (session.apiFormat) {
+    const ok = await apiSubmit(arg1, arg2, session);
+    if (ok) return;
+    console.log("Direct API failed, falling back to browser...");
+  }
+  await browserSubmit(arg1, arg2, session, true);
 }
 
 main().catch(e => { console.error("\n❌", e.message); process.exit(1); });
