@@ -218,21 +218,31 @@ async function main() {
   if (arg1 === "--setup")   { await setup(); return; }
   if (arg1 === "--inspect") { await browserSubmit("Test", "https://youtube.com/watch?v=test", loadSession(), false); return; }
 
-  if (!arg1 || !arg2) {
+  // Accept either: submit.mjs "<url>"  OR  submit.mjs "<title>" "<url>"
+  let title, videoUrl;
+  if (!arg1) {
     console.log("Usage:");
     console.log("  Setup:   node whop/submit.mjs --setup");
     console.log("  Inspect: node whop/submit.mjs --inspect");
-    console.log('  Submit:  node whop/submit.mjs "<title>" "<url>"');
+    console.log('  Submit:  node whop/submit.mjs "<url>"');
+    console.log('           node whop/submit.mjs "<title>" "<url>"');
     process.exit(1);
+  }
+  if (arg2) {
+    title = arg1;
+    videoUrl = arg2;
+  } else {
+    title = "Viral Clip";
+    videoUrl = arg1;
   }
 
   const session = loadSession();
   if (session.apiFormat) {
-    const ok = await apiSubmit(arg1, arg2, session);
+    const ok = await apiSubmit(title, videoUrl, session);
     if (ok) return;
     console.log("Direct API failed, falling back to browser...");
   }
-  await browserSubmit(arg1, arg2, session, true);
+  await browserSubmit(title, videoUrl, session, true);
 }
 
 main().catch(e => { console.error("\n❌", e.message); process.exit(1); });
