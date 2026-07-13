@@ -63,7 +63,7 @@ function uploadFile(localPath, r2Key) {
   const mb          = (statSync(localPath).size / 1024 / 1024).toFixed(1);
   console.log(`  Uploading ${r2Key} (${mb} MB)...`);
   execSync(
-    `npx wrangler r2 object put ${BUCKET}/${r2Key} --file "${localPath}" --content-type "${contentType}"`,
+    `npx wrangler r2 object put ${BUCKET}/${r2Key} --file "${localPath}" --content-type "${contentType}" --remote`,
     { stdio: "inherit" }
   );
   console.log(`  ✅ ${r2Key}`);
